@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+body {
+  /* Di v4, kita bisa langsung menggunakan variabel CSS atau @apply */
+  @apply bg-slate-50 text-slate-900;
+}
