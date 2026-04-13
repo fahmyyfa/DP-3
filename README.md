@@ -1,16 +1,15 @@
-# React + Vite
+## 📊 Pengujian Aspek Kualitas (Daily Project 3)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Pengujian ini dilakukan untuk memverifikasi bahwa implementasi sistem **SPAO** telah memenuhi standar kualitas yang dirancang pada **Daily Project 2**. Fokus utama pengujian mencakup keamanan data, ketahanan sistem, dan akurasi algoritma scoring.
 
-Currently, two official plugins are available:
+| No | Aspek Kualitas | Skenario Pengujian | Hasil Riil di Aplikasi | Status |
+|:---:|:---:|:---|:---|:---:|
+| 1 | **Security** | Perlindungan kunci akses (API Key) agar tidak terekspos di sisi klien/browser. | **LULUS.** API Key SerpApi disimpan menggunakan `Supabase Secrets` dan hanya diakses melalui `Edge Function` (Server-side). Tidak ada kunci sensitif di kode frontend. | ✅ **PASS** |
+| 2 | **Reliability** | Penanganan kondisi saat mesin pencari tidak menemukan data alumni di internet (No Results). | [cite_start]**LULUS.** Sistem mampu menangkap respon kosong dari Google, menampilkan pesan "Profil tidak ditemukan", dan tetap stabil tanpa terjadi *crash* pada aplikasi. [cite: 81, 82] | ✅ **PASS** |
+| 3 | **Accuracy** | Penentuan status pelacakan berdasarkan *Confidence Score* otomatis sesuai ambang batas. | **LULUS.** Data dengan skor $\ge 0.75$ otomatis menjadi **Teridentifikasi**. [cite_start]Data dengan skor $0.50 - 0.74$ masuk ke status **Perlu Verifikasi Manual**. [cite: 50, 61, 62, 78, 80] | ✅ **PASS** |
+| 4 | **Efficiency** | Mengatasi batasan keamanan browser (*CORS Error*) saat mengakses API pihak ketiga secara langsung. | **LULUS.** Menggunakan `Supabase Edge Functions` sebagai *proxy* komunikasi server-to-server, sehingga pengiriman data dari frontend berjalan lancar dan cepat. | ✅ **PASS** |
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+### 🛠️ Detail Logika Threshold
+Sistem menggunakan parameter ambang batas (threshold) yang ketat untuk menjamin validitas data alumni:
+* [cite_start]**Confidence Threshold ($0.75$):** Batas minimal untuk identifikasi otomatis sebagai alumni yang valid. 
+* [cite_start]**Manual Review Threshold ($0.50$):** Batas minimal untuk memicu tinjauan manual oleh Admin jika terdapat keraguan data. [cite: 50, 62, 80]
