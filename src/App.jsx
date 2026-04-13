@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { calculateScore } from "./lib/scoringLogic";
+import AddAlumniForm from "./components/AddAlumniForm";
 import { supabase } from "./lib/supabaseClient";
 import {
   Users,
@@ -36,39 +37,65 @@ function App() {
   // --- FUNGSI AUTOMATIC TRACKING (UC-3 & UC-4) ---
 
   async function runTracking(alumni) {
-    // Simulasi Data temuan dari Sumber Publik [cite: 217]
-    const mockFoundData = {
-      name: alumni.nama,
-      description: `Alumni Informatika UMM angkatan ${alumni.tahun_lulus - 4}. Bekerja sebagai Software Engineer di Tech Corp.`,
-      url: "https://linkedin.com/in/dummy-profile",
-    };
+    const query = `${alumni.nama} UMM Informatika`;
 
-    // Hitung Skor menggunakan logika pembobotan [cite: 220]
-    const finalScore = calculateScore(alumni, mockFoundData);
-    let newStatus = "Tidak Ditemukan";
+    try {
+      // Memanggil Edge Function melalui Supabase Client
+      const { data, error: funcError } = await supabase.functions.invoke(
+        "search-alumni",
+        {
+          body: { query },
+        },
+      );
 
-    // Ambang Batas (Threshold) sesuai rancangan [cite: 142-143, 220]
-    if (finalScore >= 0.75) newStatus = "Teridentifikasi";
-    else if (finalScore >= 0.5) newStatus = "Perlu Verifikasi Manual";
+      console.log("DEBUG: Hasil dari SerpApi ->", data);
 
-    // 1. Update Status di Tabel Alumni [cite: 257, 262]
-    await supabase
-      .from("alumni")
-      .update({ status_pelacakan: newStatus })
-      .eq("id", alumni.id);
+      if (funcError) throw funcError;
 
-    // 2. Simpan Bukti ke Tabel Evidence [cite: 207, 259]
-    await supabase.from("tracking_evidence").insert([
-      {
-        alumni_id: alumni.id,
-        url_sumber: mockFoundData.url,
-        snippet_data: mockFoundData.description,
-        confidence_score: finalScore,
-      },
-    ]);
+      if (data.error && data.error.includes("hasn't returned any results")) {
+        // Jika tidak ada hasil, jangan dianggap error sistem
+        await supabase
+          .from("alumni")
+          .update({ status_pelacakan: "Tidak Ditemukan" })
+          .eq("id", alumni.id);
+        fetchAlumni();
+        return; // Keluar dari fungsi dengan tenang
+      }
 
-    alert(`Pelacakan selesai! Skor: ${finalScore} -> Status: ${newStatus}`);
-    fetchAlumni(); // Segarkan tampilan dashboard
+      if (data.error) throw new Error(data.error); // Error teknis lainnya tetap ditangkap
+
+      const topMatch = data.organic_results?.[0];
+      if (!topMatch) {
+        alert("Profil tidak ditemukan di LinkedIn.");
+        return;
+      }
+
+      // --- LOGIKA SCORING (DP-2) ---
+      // Gunakan fungsi calculateScore yang sudah Anda buat di scoringLogic.js
+      const finalScore = calculateScore(alumni, {
+        name: topMatch.title,
+        description: topMatch.snippet,
+        url: topMatch.link,
+      });
+
+      // Tentukan status berdasarkan skor (DP-2: 0.75 identifikasi otomatis)
+      const newStatus =
+        finalScore >= 0.75 ? "Teridentifikasi" : "Perlu Verifikasi Manual";
+
+      // Update ke database Supabase
+      const { error: dbError } = await supabase
+        .from("alumni")
+        .update({ status_pelacakan: newStatus })
+        .eq("id", alumni.id);
+
+      if (dbError) throw dbError;
+
+      alert(`Pelacakan Selesai! Skor: ${finalScore}`);
+      fetchAlumni(); // Refresh data tabel
+    } catch (error) {
+      console.error("Detail Error:", error);
+      alert("Gagal melacak. Pastikan Edge Function sudah di-deploy.");
+    }
   }
 
   // --- FUNGSI VERIFIKASI MANUAL (UC-5) ---
@@ -150,6 +177,8 @@ function App() {
             Refresh Data
           </button>
         </header>
+
+        <AddAlumniForm onAdded={fetchAlumni} />
 
         {/* Statistik */}
         <div className="grid grid-cols-3 gap-6 mb-10">
