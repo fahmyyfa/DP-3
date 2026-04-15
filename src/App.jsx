@@ -1,359 +1,432 @@
 import { useEffect, useState } from "react";
 import { calculateScore } from "./lib/scoringLogic";
 import AddAlumniForm from "./components/AddAlumniForm";
+import Login from "./components/Login";
 import { supabase } from "./lib/supabaseClient";
 import {
   Users,
   ShieldCheck,
-  Settings,
   Search,
   CheckCircle,
   AlertCircle,
+  LogOut,
+  ChevronRight,
+  Database,
+  Globe,
+  Briefcase,
 } from "lucide-react";
+import Papa from "papaparse";
 
 function App() {
+  const [session, setSession] = useState(null);
   const [alumniList, setAlumniList] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedAlumni, setSelectedAlumni] = useState(null); // Alumni yang sedang ditinjau
-  const [evidence, setEvidence] = useState(null); // Bukti dari tabel tracking_evidence
+  const [globalStats, setGlobalStats] = useState({
+    total: 0,
+    tracked: 0,
+    highAccuracy: 0,
+  });
+  const [page, setPage] = useState(0);
+  const ITEMS_PER_PAGE = 25; // Anda bisa ganti ke 50 jika suka
 
   useEffect(() => {
-    fetchAlumni();
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  // --- FUNGSI DATA ---
+  useEffect(() => {
+    if (session) fetchAlumni();
+  }, [session]);
 
   async function fetchAlumni() {
     setLoading(true);
-    const { data } = await supabase
-      .from("alumni")
-      .select("*")
-      .order("nama", { ascending: true });
 
-    if (data) setAlumniList(data);
-    setLoading(false);
-  }
-
-  // --- FUNGSI AUTOMATIC TRACKING (UC-3 & UC-4) ---
-
-  async function runTracking(alumni) {
-    const query = `${alumni.nama} UMM Informatika`;
+    const from = page * ITEMS_PER_PAGE;
+    const to = from + ITEMS_PER_PAGE - 1;
 
     try {
-      // Memanggil Edge Function melalui Supabase Client
-      const { data, error: funcError } = await supabase.functions.invoke(
-        "search-alumni",
-        {
-          body: { query },
-        },
-      );
-
-      console.log("DEBUG: Hasil dari SerpApi ->", data);
-
-      if (funcError) throw funcError;
-
-      if (data.error && data.error.includes("hasn't returned any results")) {
-        // Jika tidak ada hasil, jangan dianggap error sistem
-        await supabase
-          .from("alumni")
-          .update({ status_pelacakan: "Tidak Ditemukan" })
-          .eq("id", alumni.id);
-        fetchAlumni();
-        return; // Keluar dari fungsi dengan tenang
-      }
-
-      if (data.error) throw new Error(data.error); // Error teknis lainnya tetap ditangkap
-
-      const topMatch = data.organic_results?.[0];
-      if (!topMatch) {
-        alert("Profil tidak ditemukan di LinkedIn.");
-        return;
-      }
-
-      // --- LOGIKA SCORING (DP-2) ---
-      // Gunakan fungsi calculateScore yang sudah Anda buat di scoringLogic.js
-      const finalScore = calculateScore(alumni, {
-        name: topMatch.title,
-        description: topMatch.snippet,
-        url: topMatch.link,
-      });
-
-      // Tentukan status berdasarkan skor (DP-2: 0.75 identifikasi otomatis)
-      const newStatus =
-        finalScore >= 0.75 ? "Teridentifikasi" : "Perlu Verifikasi Manual";
-
-      // Update ke database Supabase
-      const { error: dbError } = await supabase
+      // 1. Ambil list data untuk tabel
+      const { data: listData } = await supabase
         .from("alumni")
-        .update({ status_pelacakan: newStatus })
-        .eq("id", alumni.id);
+        .select("*")
+        .order("status_pelacakan", { ascending: false })
+        .range(from, to); // INI KUNCINYA
 
-      if (dbError) throw dbError;
+      if (listData) setAlumniList(listData);
 
-      alert(`Pelacakan Selesai! Skor: ${finalScore}`);
-      fetchAlumni(); // Refresh data tabel
-    } catch (error) {
-      console.error("Detail Error:", error);
-      alert("Gagal melacak. Pastikan Edge Function sudah di-deploy.");
+      // 2. Ambil Total Database
+      const { count: totalData } = await supabase
+        .from("alumni")
+        .select("*", { count: "exact", head: true });
+
+      // 3. Ambil Coverage (Semua yang sudah diproses)
+      const { count: totalTracked } = await supabase
+        .from("alumni")
+        .select("*", { count: "exact", head: true })
+        .not("status_pelacakan", "eq", "Belum Dilacak");
+
+      // 4. Ambil Data Quality (Gunakan .or agar mencakup semua variasi teks)
+      // Kita tembak langsung ke teks yang muncul di tabel Anda
+      const { count: totalIdentified } = await supabase
+        .from("alumni")
+        .select("*", { count: "exact", head: true })
+        .or(
+          "status_pelacakan.ilike.%Teridentifikasi%,status_pelacakan.ilike.%SERPAPI%",
+        );
+
+      if (listData) setAlumniList(listData);
+
+      // Pastikan angka dimasukkan ke state
+      setGlobalStats({
+        total: totalData || 0,
+        tracked: totalTracked || 0,
+        highAccuracy: totalIdentified || 0,
+      });
+    } catch (err) {
+      console.error("Gagal sinkronisasi statistik:", err);
+    } finally {
+      setLoading(false);
     }
   }
 
-  // --- FUNGSI VERIFIKASI MANUAL (UC-5) ---
+  useEffect(() => {
+    if (session) fetchAlumni();
+  }, [session, page]);
 
-  async function viewEvidence(alumni) {
-    setSelectedAlumni(alumni);
-    const { data } = await supabase
-      .from("tracking_evidence")
-      .select("*")
-      .eq("alumni_id", alumni.id)
-      .order("created_at", { ascending: false }) // Ambil bukti terbaru
-      .limit(1);
+  // --- REVISI: FUNGSI HITUNG ATRIBUT TERLACAK ---
+  const getFoundDataCount = (alumni) => {
+    const fields = [
+      "linkedin_url",
+      "instagram_url",
+      "facebook_url",
+      "tiktok_url",
+      "email",
+      "no_hp",
+      "tempat_kerja",
+      "alamat_kerja",
+      "posisi",
+      "jenis_instansi",
+      "sosmed_kantor",
+    ];
+    return fields.filter((field) => alumni[field] && alumni[field] !== "")
+      .length;
+  };
 
-    if (data && data.length > 0) {
-      setEvidence(data[0]);
-    } else {
-      alert("Belum ada bukti pelacakan. Silakan klik 'Lacak' terlebih dahulu.");
-      setSelectedAlumni(null);
-    }
+  // --- STATISTIK UNTUK WIDGET ---
+  const stats = {
+    total: alumniList.length,
+    tracked: alumniList.filter((a) => a.status_pelacakan !== "Belum Dilacak")
+      .length,
+    highAccuracy: alumniList.filter(
+      (a) => a.status_pelacakan === "Teridentifikasi",
+    ).length,
+  };
+
+  async function handleLogout() {
+    await supabase.signOut();
+    setSession(null);
   }
 
-  async function handleDecision(id, isApproved) {
-    const newStatus = isApproved ? "Teridentifikasi" : "Tidak Cocok";
-
-    const { error } = await supabase
-      .from("alumni")
-      .update({ status_pelacakan: newStatus })
-      .eq("id", id);
-
-    if (!error) {
-      alert(`Status berhasil diperbarui menjadi: ${newStatus}`);
-      setSelectedAlumni(null); // Tutup modal
-      fetchAlumni(); // Segarkan tabel
-    }
+  if (!session) {
+    return <Login onLoginSuccess={(sess) => setSession(sess)} />;
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    <div className="flex min-h-screen bg-slate-50 font-sans">
       {/* Sidebar */}
-      <div className="w-64 bg-slate-900 text-white p-6 fixed h-full">
-        <h1 className="text-xl font-bold mb-10 flex items-center gap-2 text-indigo-400">
-          <Search size={24} /> SPAO Admin
-        </h1>
-        <nav className="space-y-4">
-          <a
-            href="#"
-            className="flex items-center gap-3 p-3 bg-indigo-600 rounded-lg"
+      <div className="w-64 bg-slate-900 text-white p-6 fixed h-full flex flex-col justify-between shadow-2xl">
+        <div>
+          <h1 className="text-xl font-bold mb-10 flex items-center gap-2 text-indigo-400">
+            <Search size={24} /> SPAO Admin
+          </h1>
+          <nav className="space-y-2">
+            <button className="w-full flex items-center gap-3 p-3 bg-indigo-600 rounded-xl font-bold transition shadow-lg shadow-indigo-500/20 text-sm">
+              <Users size={20} /> Daftar Alumni
+            </button>
+          </nav>
+        </div>
+        <div className="pt-6 border-t border-slate-800">
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center justify-center gap-2 p-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20 transition text-sm font-bold"
           >
-            <Users size={20} /> Daftar Alumni
-          </a>
-          <a
-            href="#"
-            className="flex items-center gap-3 p-3 hover:bg-slate-800 rounded-lg text-slate-400"
-          >
-            <ShieldCheck size={20} /> Verifikasi Hasil
-          </a>
-          <a
-            href="#"
-            className="flex items-center gap-3 p-3 hover:bg-slate-800 rounded-lg text-slate-400"
-          >
-            <Settings size={20} /> Konfigurasi
-          </a>
-        </nav>
+            <LogOut size={16} /> Keluar
+          </button>
+        </div>
       </div>
 
       {/* Main Content */}
       <div className="flex-1 ml-64 p-10">
-        <header className="mb-8 flex justify-between items-center">
+        <header className="mb-8 flex justify-between items-end">
           <div>
-            <h2 className="text-3xl font-bold text-slate-900">Daftar Alumni</h2>
-            <p className="text-slate-500">
-              Pantau status pelacakan otomatis secara real-time.
+            <h2 className="text-4xl font-black text-slate-900 mt-1">
+              Dashboard Pelacakan
+            </h2>
+            <p className="text-slate-500 font-medium">
+              Monitoring data alumni Universitas Muhammadiyah Malang
             </p>
           </div>
-          <button
-            onClick={fetchAlumni}
-            className="bg-white border border-slate-200 p-2 px-4 rounded-lg shadow-sm hover:bg-slate-50 transition font-medium"
-          >
-            Refresh Data
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={fetchAlumni}
+              className="bg-white border border-slate-200 p-2.5 px-5 rounded-xl font-bold hover:bg-slate-50 transition shadow-sm text-sm"
+            >
+              Refresh
+            </button>
+          </div>
         </header>
 
-        <AddAlumniForm onAdded={fetchAlumni} />
+        {/* --- REVISI: WIDGET STATISTIK --- */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
+                <Database size={24} />
+              </div>
+              <span className="text-xs font-black text-slate-400 uppercase tracking-tighter">
+                Database Utama
+              </span>
+            </div>
 
-        {/* Statistik */}
-        <div className="grid grid-cols-3 gap-6 mb-10">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100">
-            <p className="text-slate-500 text-sm mb-1 font-medium">
-              Total Alumni
-            </p>
-            <p className="text-3xl font-bold">{alumniList.length}</p>
-          </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100">
-            <p className="text-green-600 text-sm mb-1 font-medium">
-              Teridentifikasi
-            </p>
-            <p className="text-3xl font-bold text-green-600">
-              {
-                alumniList.filter(
-                  (a) => a.status_pelacakan === "Teridentifikasi",
-                ).length
-              }
+            <h4 className="text-3xl font-black text-slate-900">
+              {globalStats.total.toLocaleString()}
+            </h4>
+            <p className="text-slate-500 text-sm font-medium">
+              Total Alumni di Sistem
             </p>
           </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100">
-            <p className="text-amber-600 text-sm mb-1 font-medium">
-              Perlu Verifikasi
+
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-green-50 text-green-600 rounded-xl">
+                <Globe size={24} />
+              </div>
+              <span className="text-xs font-black text-slate-400 uppercase tracking-tighter">
+                Coverage
+              </span>
+            </div>
+            <h4 className="text-3xl font-black text-slate-900">
+              {globalStats.tracked.toLocaleString()}
+              <span className="text-sm text-slate-400 font-normal ml-2">
+                (
+                {globalStats.total > 0
+                  ? ((globalStats.tracked / globalStats.total) * 100).toFixed(4)
+                  : 0}
+                %)
+              </span>
+            </h4>
+            <p className="text-slate-500 text-sm font-medium">
+              Individu Berhasil Dilacak
             </p>
-            <p className="text-3xl font-bold text-amber-600">
-              {
-                alumniList.filter(
-                  (a) => a.status_pelacakan === "Perlu Verifikasi Manual",
-                ).length
-              }
+          </div>
+
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
+                <CheckCircle size={24} />
+              </div>
+              <span className="text-xs font-black text-slate-400 uppercase tracking-tighter">
+                Data Quality
+              </span>
+            </div>
+            <h4 className="text-3xl font-black text-slate-900">
+              {globalStats.highAccuracy.toLocaleString()}
+            </h4>
+            <p className="text-slate-500 text-sm font-medium">
+              Status Teridentifikasi
             </p>
           </div>
         </div>
 
-        {/* Tabel */}
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <AddAlumniForm onAdded={fetchAlumni} />
+
+        <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200 overflow-hidden mt-10">
           <table className="w-full text-left">
-            <thead className="bg-slate-50 border-b border-slate-200">
+            <thead className="bg-slate-50/50 border-b border-slate-200">
               <tr>
-                <th className="p-4 font-semibold text-slate-700">NIM</th>
-                <th className="p-4 font-semibold text-slate-700">
-                  Nama Lengkap
+                <th className="p-5 font-bold text-slate-600 text-xs uppercase tracking-wider">
+                  Informasi Alumni
                 </th>
-                <th className="p-4 font-semibold text-slate-700">Prodi</th>
-                <th className="p-4 font-semibold text-slate-700">
-                  Status Pelacakan
+                <th className="p-5 font-bold text-slate-600 text-xs uppercase tracking-wider text-center">
+                  Detail Data
                 </th>
-                <th className="p-4 font-semibold text-slate-700 text-center">
+                <th className="p-5 font-bold text-slate-600 text-xs uppercase tracking-wider text-center">
+                  Status
+                </th>
+                <th className="p-5 font-bold text-slate-600 text-xs uppercase tracking-wider text-center">
                   Aksi
                 </th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan="5" className="p-10 text-center text-slate-400">
-                    Memuat data...
+                  <td
+                    colSpan="4"
+                    className="p-20 text-center text-slate-400 font-medium"
+                  >
+                    Menghubungkan ke server...
                   </td>
                 </tr>
               ) : (
-                alumniList.map((alumni) => (
-                  <tr
-                    key={alumni.id}
-                    className="border-b border-slate-50 hover:bg-slate-50 transition"
-                  >
-                    <td className="p-4 font-mono text-sm text-slate-500">
-                      {alumni.nim}
-                    </td>
-                    <td className="p-4 font-semibold text-slate-800">
-                      {alumni.nama}
-                    </td>
-                    <td className="p-4 text-slate-600">{alumni.prodi}</td>
-                    <td className="p-4">
-                      <span
-                        className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 w-fit ${
-                          alumni.status_pelacakan === "Teridentifikasi"
-                            ? "bg-green-100 text-green-700"
-                            : alumni.status_pelacakan ===
-                                "Perlu Verifikasi Manual"
-                              ? "bg-amber-100 text-amber-700"
-                              : "bg-slate-100 text-slate-600"
-                        }`}
-                      >
-                        {alumni.status_pelacakan === "Teridentifikasi" ? (
-                          <CheckCircle size={14} />
-                        ) : (
-                          <AlertCircle size={14} />
-                        )}
-                        {alumni.status_pelacakan}
-                      </span>
-                    </td>
-                    <td className="p-4 text-center space-x-4">
-                      <button
-                        onClick={() => runTracking(alumni)}
-                        className="text-indigo-600 hover:text-indigo-900 font-bold text-sm"
-                      >
-                        Lacak
-                      </button>
-                      <button
-                        onClick={() => viewEvidence(alumni)}
-                        className="text-slate-400 hover:text-slate-700 font-bold text-sm"
-                      >
-                        Review
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                alumniList.map((alumni) => {
+                  const foundCount = getFoundDataCount(alumni);
+                  return (
+                    <tr
+                      key={alumni.id}
+                      className="hover:bg-slate-50/80 transition group"
+                    >
+                      <td className="p-5">
+                        <div className="flex flex-col">
+                          <span className="font-black text-slate-800 text-base">
+                            {alumni.nama}
+                          </span>
+                          <span className="text-slate-400 text-xs font-semibold">
+                            {alumni.nim} • {alumni.prodi}
+                          </span>
+                          {alumni.posisi && (
+                            <span className="text-indigo-600 text-xs font-bold mt-1 flex items-center gap-1">
+                              <Briefcase size={12} /> {alumni.posisi}{" "}
+                              {alumni.tempat_kerja
+                                ? `at ${alumni.tempat_kerja}`
+                                : ""}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* --- REVISI: DISPLAY CHIPS DATA --- */}
+                      <td className="p-5">
+                        <div className="flex flex-wrap justify-center gap-1.5 max-w-[250px] mx-auto">
+                          {/* Mapping otomatis semua field yang ada isinya */}
+                          {alumni.linkedin_url && (
+                            <span className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-md text-[9px] font-bold border border-blue-100">
+                              LINKEDIN
+                            </span>
+                          )}
+                          {alumni.instagram_url && (
+                            <span className="px-2 py-0.5 bg-pink-50 text-pink-600 rounded-md text-[9px] font-bold border border-pink-100">
+                              INSTAGRAM
+                            </span>
+                          )}
+                          {alumni.facebook_url && (
+                            <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded-md text-[9px] font-bold border border-indigo-100">
+                              FACEBOOK
+                            </span>
+                          )}
+                          {alumni.posisi && (
+                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded-md text-[9px] font-bold border border-emerald-100">
+                              POSISI
+                            </span>
+                          )}
+                          {alumni.tempat_kerja && (
+                            <span className="px-2 py-0.5 bg-purple-50 text-purple-600 rounded-md text-[9px] font-bold border border-purple-100">
+                              KANTOR
+                            </span>
+                          )}
+                          {alumni.alamat_kerja && (
+                            <span className="px-2 py-0.5 bg-slate-50 text-slate-600 rounded-md text-[9px] font-bold border border-slate-100">
+                              LOKASI
+                            </span>
+                          )}
+                          {alumni.email && (
+                            <span className="px-2 py-0.5 bg-red-50 text-red-600 rounded-md text-[9px] font-bold border border-red-100">
+                              EMAIL
+                            </span>
+                          )}
+                          {alumni.no_hp && (
+                            <span className="px-2 py-0.5 bg-green-50 text-green-600 rounded-md text-[9px] font-bold border border-green-100">
+                              WA/TELP
+                            </span>
+                          )}
+
+                          {/* Tampilan jika benar-benar kosong */}
+                          {getFoundDataCount(alumni) === 0 && (
+                            <span className="text-[10px] text-slate-300 italic">
+                              No public data found
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      <td className="p-5 text-center">
+                        <div className="flex flex-col items-center gap-1">
+                          <span
+                            className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${
+                              alumni.status_pelacakan === "Teridentifikasi"
+                                ? "bg-green-100 text-green-700"
+                                : alumni.status_pelacakan === "Belum Dilacak"
+                                  ? "bg-slate-100 text-slate-500"
+                                  : "bg-amber-100 text-amber-700"
+                            }`}
+                          >
+                            {alumni.status_pelacakan}
+                          </span>
+                          {foundCount > 0 && (
+                            <span className="text-[10px] font-bold text-indigo-500">
+                              +{foundCount} Atribut
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      <td className="p-5">
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => {
+                              /* fungsi runTracking Anda */
+                            }}
+                            className="p-2 px-4 bg-slate-900 text-white rounded-xl font-bold text-[10px] uppercase hover:bg-indigo-600 transition shadow-sm"
+                          >
+                            Lacak
+                          </button>
+                          <button className="p-2 text-slate-300 hover:text-slate-900 transition">
+                            <ChevronRight size={18} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
-        </div>
-      </div>
+          <div className="bg-slate-50 border-t border-slate-200 p-4 flex justify-between items-center">
+            <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">
+              Menampilkan {page * ITEMS_PER_PAGE + 1} -{" "}
+              {Math.min((page + 1) * ITEMS_PER_PAGE, globalStats.total)} dari{" "}
+              {globalStats.total.toLocaleString()} Alumni
+            </p>
 
-      {/* Modal Verifikasi Manual (UC-5) */}
-      {selectedAlumni && evidence && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl p-8 max-w-lg w-full shadow-2xl border border-slate-200">
-            <div className="flex justify-between items-start mb-6">
-              <div>
-                <h3 className="text-2xl font-bold text-slate-900">
-                  Verifikasi Manual
-                </h3>
-                <p className="text-slate-500 text-sm">
-                  Alumni:{" "}
-                  <span className="font-bold text-slate-800">
-                    {selectedAlumni.nama}
-                  </span>
-                </p>
-              </div>
-              <span className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-xs font-bold">
-                Skor: {evidence.confidence_score}
-              </span>
-            </div>
-
-            <div className="bg-slate-50 p-5 rounded-xl mb-8 border border-slate-200">
-              <p className="text-xs font-bold text-indigo-600 uppercase tracking-wider mb-3 text-indigo-500">
-                Bukti Temuan (Snippet)
-              </p>
-              <p className="italic text-slate-700 leading-relaxed mb-4">
-                "{evidence.snippet_data}"
-              </p>
-              <a
-                href={evidence.url_sumber}
-                target="_blank"
-                rel="noreferrer"
-                className="text-indigo-600 text-sm font-bold hover:underline flex items-center gap-1"
-              >
-                Lihat Profil Sumber ↗
-              </a>
-            </div>
-
-            <div className="flex gap-3">
+            <div className="flex gap-2">
               <button
-                onClick={() => handleDecision(selectedAlumni.id, true)}
-                className="flex-1 bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 transition"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="p-2 px-4 bg-white border border-slate-200 rounded-xl font-black text-[10px] uppercase disabled:opacity-30 hover:bg-slate-50 transition"
               >
-                Setujui (Valid)
+                Sebelumnya
               </button>
+
               <button
-                onClick={() => handleDecision(selectedAlumni.id, false)}
-                className="flex-1 bg-white border-2 border-slate-200 text-slate-700 py-3 rounded-xl font-bold hover:bg-slate-50 transition"
+                onClick={() => setPage((p) => p + 1)}
+                disabled={(page + 1) * ITEMS_PER_PAGE >= globalStats.total}
+                className="p-2 px-4 bg-slate-900 text-white rounded-xl font-black text-[10px] uppercase hover:bg-indigo-600 transition disabled:opacity-30"
               >
-                Tolak (Salah)
-              </button>
-              <button
-                onClick={() => setSelectedAlumni(null)}
-                className="px-4 text-slate-400 hover:text-slate-600 text-sm font-medium"
-              >
-                Batal
+                Berikutnya
               </button>
             </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
