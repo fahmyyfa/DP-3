@@ -1,143 +1,113 @@
+import os
 import time
 import re
 import requests
+from dotenv import load_dotenv
 from supabase import create_client
 
+load_dotenv()
+
+# Konfigurasi
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-SERPAPI_KEY = "a17805529bd998f4ac930731690b063089bf5be46728c5c0326823d2aab6a661"
-
+# 4 Media Sosial Utama
 PLATFORMS = {
     "linkedin_url": "site:linkedin.com/in",
     "instagram_url": "site:instagram.com",
-    "facebook_url": "site:facebook.com"
+    "facebook_url": "site:facebook.com",
+    "tiktok_url": "site:tiktok.com"
 }
 
-def extract_public_data(snippet, current_data):
-    """Ekstraksi Data Kompleks (Tidak Berubah)"""
-    snippet_str = str(snippet)
-    EMAIL_PATTERN = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    PHONE_PATTERN = r'(?:\+62|08)[0-9]{7,11}'
+def extract_alumni_data(snippet, current_data):
+    """Ekstraksi 11 Poin Data (Natural & Classified)"""
+    s = str(snippet)
     
-    if "email" not in current_data:
-        emails = re.findall(EMAIL_PATTERN, snippet_str)
-        if emails: current_data["email"] = emails[0]
-            
-    if "no_hp" not in current_data:
-        phones = re.findall(PHONE_PATTERN, snippet_str.replace(" ", "").replace("-", ""))
-        if phones: current_data["no_hp"] = phones[0]
+    # 1. Kontak (Email & No HP)
+    emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', s)
+    if emails and not current_data.get("email"): current_data["email"] = emails[0]
+    
+    phones = re.findall(r'(?:\+62|08)[0-9]{7,11}', s.replace(" ", "").replace("-", ""))
+    if phones and not current_data.get("no_hp"): current_data["no_hp"] = phones[0]
 
-    HANDLE_PATTERN = r'(?:^|\s)(@[a-zA-Z0-9_.]+)(?!\w*@)'
-    if "sosmed_kantor" not in current_data:
-        handles = re.findall(HANDLE_PATTERN, snippet_str)
-        for handle in handles:
-            if "email" not in current_data or handle not in current_data.get("email", ""):
-                current_data["sosmed_kantor"] = handle.strip()
-                break
-
-    if "posisi" not in current_data and " at " in snippet_str:
-        parts = snippet_str.split(" at ")
+    # 2. Karir (Posisi, Tempat Kerja, Alamat Kerja)
+    if " - " in s:
+        parts = s.split(" - ")
         if len(parts) > 1:
-            current_data["posisi"] = parts[0].split()[-1]
-            tempat_kotor = parts[1]
-            for separator in [' - ', ' | ', '.', ',']:
-                tempat_kotor = tempat_kotor.split(separator)[0]
-            current_data["tempat_kerja"] = tempat_kotor.strip()
+            career_info = parts[1]
+            if " at " in career_info:
+                p_split = career_info.split(" at ", 1)
+                if not current_data.get("posisi"): current_data["posisi"] = p_split[0].strip()
+                if not current_data.get("tempat_kerja"): current_data["tempat_kerja"] = p_split[1].strip()
+            else:
+                if not current_data.get("posisi"): current_data["posisi"] = career_info.strip()
 
-    if "jenis_instansi" not in current_data:
-        pos_lower = current_data.get("posisi", "").lower()
-        tk_lower = current_data.get("tempat_kerja", snippet_str).lower()
-        kunci_wirausaha = ['owner', 'founder', 'ceo', 'self employed', 'wiraswasta', 'freelance', 'pemilik']
-        if any(kw in pos_lower for kw in kunci_wirausaha):
-            current_data["jenis_instansi"] = "Wirausaha"
-        elif any(kw in tk_lower for kw in ['dinas', 'kementerian', 'pemprov', 'pemkab', 'pemkot', 'negeri', 'sdn ', 'smpn ', 'sman ', 'puskesmas', 'rsud', 'badan']):
-            current_data["jenis_instansi"] = "PNS"
-        elif current_data.get("tempat_kerja"):
-            current_data["jenis_instansi"] = "Swasta"
+            if len(parts) > 2 and not current_data.get("alamat_kerja"):
+                current_data["alamat_kerja"] = parts[2].split('|')[0].strip()
 
-    if "alamat_kerja" not in current_data:
-        kota_populer = ['Jakarta', 'Surabaya', 'Malang', 'Bandung', 'Medan', 'Semarang', 'Makassar', 'Yogyakarta', 'Bali', 'Sidoarjo', 'Batu', 'Gresik']
-        for kota in kota_populer:
-            if kota.lower() in snippet_str.lower():
-                current_data["alamat_kerja"] = kota
-                break 
+    # 3. Klasifikasi Instansi
+    job_context = f"{current_data.get('posisi', '')} {current_data.get('tempat_kerja', '')}".lower()
+    if any(x in job_context for x in ['owner', 'founder', 'ceo', 'wiraswasta', 'usaha', 'pemilik']):
+        current_data["jenis_instansi"] = "Wirausaha"
+    elif any(x in job_context for x in ['dinas', 'kementerian', 'pns', 'asn', 'negeri', 'upt', 'guru']):
+        current_data["jenis_instansi"] = "PNS"
+    elif current_data.get("tempat_kerja"):
+        current_data["jenis_instansi"] = "Swasta"
+
+    # 4. Sosmed Kantor (@handle)
+    handle = re.search(r'@([a-z0-9_.]+)', s)
+    if handle and not current_data.get("sosmed_kantor"):
+        current_data["sosmed_kantor"] = f"@{handle.group(1)}"
+
     return current_data
 
-def generate_smart_queries(name, prodi, platform_dork):
-    """Pencarian 3 Lapis"""
-    queries = []
-    queries.append(f'{platform_dork} "{name}" "Universitas Muhammadiyah Malang"') # Formal
-    parts = name.split()
-    if len(parts) > 1:
-        queries.append(f'{platform_dork} {parts[0]} {parts[-1][0]}. UMM Malang') # Singkatan
-    if prodi:
-        prodi_bersih = str(prodi).replace("S1", "").replace("S-1", "").replace("Teknik", "").strip()
-        queries.append(f'{platform_dork} {name} {prodi_bersih} UMM') # Konteks
-    return queries
-
-def search_with_serpapi(query):
-    """Fungsi khusus untuk menembak SerpApi (Anti-Blokir)"""
+def search_serpapi(query):
     url = f"https://serpapi.com/search.json?engine=google&q={query}&api_key={SERPAPI_KEY}"
     try:
-        response = requests.get(url).json()
-        if "organic_results" in response and len(response["organic_results"]) > 0:
-            # Mengembalikan Link dan Snippet dari hasil teratas
-            first_result = response["organic_results"][0]
-            return first_result.get("link"), first_result.get("snippet", "")
-        return None, None
-    except Exception as e:
-        print(f"    [!] Error SerpApi: {e}")
-        return None, None
+        res = requests.get(url).json()
+        if "organic_results" in res and len(res["organic_results"]) > 0:
+            return res["organic_results"][0].get("link"), res["organic_results"][0].get("snippet", "")
+    except: pass
+    return None, None
 
-def run_serpapi_tracker(limit=30):
-    print(f"--- Memulai Pelacakan Level Industri (SerpApi) untuk {limit} data ---")
-    
-    # Ambil data yang sebelumnya gagal atau belum dilacak
-    response = supabase.table("alumni").select("id, nama, prodi").in_("status_pelacakan", ["Belum Dilacak", "Gagal Internal - Butuh SerpApi"]).limit(limit).execute()
-    alumni_list = response.data
-
-    if not alumni_list:
-        print("Semua data sudah dilacak (atau kuota halaman ini habis).")
-        return
+def run_exhaustive_tracker(limit=60):
+    print(f"--- Menjalankan Pelacakan 11 Atribut & 4 Platform ---")
+    res = supabase.table("alumni").select("id, nama, prodi").eq("status_pelacakan", "Belum Dilacak").limit(limit).execute()
+    alumni_list = res.data
 
     for alumni in alumni_list:
-        print(f"\nMenganalisa Target: {alumni['nama']}")
-        updated_data = {}
+        print(f"\nTarget: {alumni['nama']}")
+        # Inisialisasi dictionary data untuk alumni saat ini
+        data = {}
 
-        # Karena SerpApi berbayar/dibatasi (100 pencarian), KITA FOKUS DI LINKEDIN SAJA DULU untuk menghemat kuota
-        # Jika Anda ingin mencari IG/FB juga, ubah 'PLATFORMS' di atas
-        for column, dork in {"linkedin_url": "site:linkedin.com/in"}.items(): 
-            variasi_queries = generate_smart_queries(alumni["nama"], alumni.get("prodi"), dork)
+        for col, dork in PLATFORMS.items():
+            query = f'{dork} "{alumni["nama"]}" UMM'
+            print(f"  [-] Mencari {col.split('_')[0]}...", end="\r")
             
-            for attempt, query in enumerate(variasi_queries):
-                # Eksekusi pencarian ke SerpApi
-                found_url, snippet = search_with_serpapi(query)
-                
-                if found_url:
-                    updated_data[column] = found_url
-                    print(f"  [+] URL {column.split('_')[0]} ditemukan (Lapis {attempt+1}) via SerpApi")
-                    updated_data = extract_public_data(snippet, updated_data)
-                    break 
-                    
-            if updated_data:
-                updated_data["status_pelacakan"] = "Teridentifikasi (SerpApi)"
-                supabase.table("alumni").update(updated_data).eq("id", alumni['id']).execute()
-                
-                extracted_keys = [k for k in updated_data.keys() if k not in ["status_pelacakan", "linkedin_url"]]
-                if extracted_keys:
-                    print(f"  [!] Berhasil mengekstrak data publik: {', '.join(extracted_keys)}")
-            else:
-                supabase.table("alumni").update({"status_pelacakan": "Gagal SerpApi (Data Kosong)"}).eq("id", alumni['id']).execute()
-                print(f"  [-] Target memang tidak memiliki jejak digital publik.")
+            link, snip = search_serpapi(query)
+            if link:
+                data[col] = link
+                data = extract_alumni_data(snip, data)
+                print(f"  [+] Data ditemukan di {col.split('_')[0]}           ")
+            
+            time.sleep(0.5)
 
-        print(f"  [~] Menunggu 2 detik sebelum target berikutnya...")
-        time.sleep(2)
+        if data:
+            # --- LOGIKA REVISI: Hitung found_count sebelum update ---
+            # Menghitung semua key yang memiliki nilai (LinkedIn, IG, Posisi, dll)
+            found_count = len([k for k, v in data.items() if v])
+            
+            data["found_count"] = found_count
+            data["status_pelacakan"] = "Teridentifikasi (Full Natural)"
+            
+            supabase.table("alumni").update(data).eq("id", alumni['id']).execute()
+            print(f" [!] Sinkronisasi Berhasil: {found_count} atribut ditemukan.")
+        else:
+            supabase.table("alumni").update({"status_pelacakan": "Gagal Pelacakan"}).eq("id", alumni['id']).execute()
+            print(f" [x] Tidak ada data ditemukan.")
 
 if __name__ == "__main__":
-    total_target = 218 
-    
-    print(f"Memulai Batch Tracking: {total_target} data...")
-    
-    run_serpapi_tracker(limit=total_target)
+    # Kuota 250 token SerpApi / 4 query per alumni = ~62 alumni
+    run_exhaustive_tracker(limit=60)

@@ -1,3 +1,10 @@
+import os  # Tambahkan baris ini
+import http.client
+import json
+from dotenv import load_dotenv
+
+# Load environment variables dari file .env
+load_dotenv()
 import http.client
 import json
 import time
@@ -40,7 +47,9 @@ def run_serper_tracker(limit=100):
     print(f"--- SERPER DEEP SEARCH: PROCESSING {limit} ALUMNI ---")
     
     res = supabase.table("alumni").select("id, nama, prodi")\
-        .eq("status_pelacakan", "Belum Dilacak").limit(limit).execute()
+        .eq("status_pelacakan", "Belum Dilacak")\
+        .lte("id", 71146)\
+        .limit(limit).execute()
     alumni_list = res.data
 
     for alumni in alumni_list:

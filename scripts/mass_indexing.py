@@ -1,3 +1,10 @@
+import os  # Tambahkan baris ini
+import http.client
+import json
+from dotenv import load_dotenv
+
+# Load environment variables dari file .env
+load_dotenv()
 import time
 from duckduckgo_search import DDGS
 from supabase import create_client
@@ -56,4 +63,4 @@ def run_mass_indexing(limit=500):
 
 if __name__ == "__main__":
     # Jalankan 500 data per running. Jika aman, naikkan ke 1000.
-    run_mass_indexing(limit=500)
+    run_mass_indexing(limit=5000)

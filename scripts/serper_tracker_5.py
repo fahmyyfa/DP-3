@@ -10,7 +10,7 @@ import json
 import time
 from supabase import create_client
 
-SERPER_API_KEY_1 = os.getenv("SERPER_API_KEY_1")
+SERPER_API_KEY_5 = os.getenv("SERPER_API_KEY_5")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -19,7 +19,7 @@ def search_serper(query):
     conn = http.client.HTTPSConnection("google.serper.dev")
     payload = json.dumps({"q": query})
     headers = {
-        'X-API-KEY': SERPER_API_KEY_1,
+        'X-API-KEY': SERPER_API_KEY_5,
         'Content-Type': 'application/json'
     }
     conn.request("POST", "/search", payload, headers)
@@ -47,7 +47,9 @@ def run_serper_tracker(limit=100):
     print(f"--- SERPER DEEP SEARCH: PROCESSING {limit} ALUMNI ---")
     
     res = supabase.table("alumni").select("id, nama, prodi")\
-        .eq("status_pelacakan", "Belum Dilacak").limit(limit).execute()
+        .eq("status_pelacakan", "Belum Dilacak")\
+        .lte("id", 71146)\
+        .limit(limit).execute()
     alumni_list = res.data
 
     for alumni in alumni_list:
@@ -90,4 +92,4 @@ def run_serper_tracker(limit=100):
 if __name__ == "__main__":
     # Langsung set ke 2500 sesuai kuota gratis Serper
     # Kita bagi per batch kecil di dalam loop secara otomatis agar aman
-    run_serper_tracker(limit=2400)
+    run_serper_tracker(limit=1530)
