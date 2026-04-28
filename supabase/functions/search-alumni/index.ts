@@ -1,4 +1,3 @@
-// deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 serve(async (req: Request) => {
@@ -14,7 +13,6 @@ serve(async (req: Request) => {
 
   try {
     const { query } = await req.json();
-    // Mengambil key dari Secrets secara aman
     const apiKey = Deno.env.get("SERP_API_KEY");
 
     if (!apiKey) throw new Error("API Key tidak ditemukan di server Secrets");

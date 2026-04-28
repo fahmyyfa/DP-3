@@ -13,7 +13,6 @@ export default function AddAlumniForm({ onAdded }) {
     e.preventDefault();
     const { error } = await supabase.from("alumni").insert([formData]);
     if (error) {
-      // Tambahkan alert ini untuk melihat pesan error dari database
       alert("Gagal menyimpan: " + error.message);
     } else {
       alert("Alumni berhasil ditambahkan!");
