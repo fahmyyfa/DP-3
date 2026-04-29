@@ -36,40 +36,45 @@ const DaftarAlumni = () => {
     const to = from + ITEMS_PER_PAGE - 1;
 
     try {
-      let query = supabase.from("alumni").select("*");
+      let listQuery = supabase.from("alumni").select("*");
       if (searchTerm) {
-        query = query.or(
+        listQuery = listQuery.or(
           `nama.ilike.%${searchTerm}%,nim.ilike.%${searchTerm}%`,
         );
       }
 
-      const { data: listData, error: listError } = await query
+      const { data: listData, error: listError } = await listQuery
         .order("auto_score", { ascending: false })
         .range(from, to);
 
       if (listError) throw listError;
       setAlumniList(listData || []);
 
-      const { count: totalPop } = await supabase
-        .from("alumni")
-        .select("*", { count: "exact", head: true });
-      const { count: trackedInd } = await supabase
-        .from("alumni")
-        .select("*", { count: "exact", head: true })
-        .not("status_pelacakan", "ilike", "%Belum Dilacak%");
+      const [resTotal, resTracked, resIdentified, resDist] = await Promise.all([
+        supabase.from("alumni").select("*", { count: "exact", head: true }),
+        supabase
+          .from("alumni")
+          .select("*", { count: "exact", head: true })
+          .not("status_pelacakan", "ilike", "%Belum Dilacak%"),
+        supabase
+          .from("alumni")
+          .select("*", { count: "exact", head: true })
+          .ilike("status_pelacakan", "%Teridentifikasi%"),
+        supabase.from("alumni_field_distribution").select("*"),
+      ]);
 
-      const { count: idnInd } = await supabase
-        .from("alumni")
-        .select("*", { count: "exact", head: true })
-        .ilike("status_pelacakan", "%Teridentifikasi%");
+      let auditStats = {
+        avg: 0,
+        totalInView: 0,
+        dist: { lessThanTwo: 0, twoFields: 0, threeFields: 0, fourFields: 0 },
+      };
 
-      const { data: distData, error: distError } = await supabase
-        .from("alumni_field_distribution")
-        .select("*");
+      if (!resDist.error && resDist.data) {
+        const distData = resDist.data;
 
-      let avg = 0;
-      if (!distError && distData) {
-        const dist = {
+        auditStats.totalInView = distData.length;
+
+        auditStats.dist = {
           lessThanTwo: distData.filter((d) => d.filled_fields_count < 2).length,
           twoFields: distData.filter((d) => d.filled_fields_count === 2).length,
           threeFields: distData.filter((d) => d.filled_fields_count === 3)
@@ -77,29 +82,24 @@ const DaftarAlumni = () => {
           fourFields: distData.filter((d) => d.filled_fields_count === 4)
             .length,
         };
-        setDistributionData(dist);
-        avg =
-          distData.length > 0
-            ? (
-                distData.reduce(
-                  (acc, curr) => acc + curr.filled_fields_count,
-                  0,
-                ) / distData.length
-              ).toFixed(1)
+
+        const totalPoints = distData.reduce(
+          (acc, curr) => acc + curr.filled_fields_count,
+          0,
+        );
+        auditStats.avg =
+          auditStats.totalInView > 0
+            ? (totalPoints / auditStats.totalInView).toFixed(1)
             : 0;
       }
 
-      const { count: auditMatchCount } = await supabase
-        .from("alumni")
-        .select("*", { count: "exact", head: true })
-        .gt("manual_score", 0);
-
+      setDistributionData(auditStats.dist);
       setGlobalStats({
-        total: totalPop || 142292,
-        tracked_count: trackedInd || 0,
-        highAccuracy: idnInd || 0,
-        avg_fields: avg,
-        audit_match: auditMatchCount || 0,
+        total: resTotal.count || 142292,
+        tracked_count: resTracked.count || 0,
+        highAccuracy: resIdentified.count || 0,
+        avg_fields: auditStats.avg,
+        audit_match: auditStats.totalInView,
       });
     } catch (err) {
       console.error("Fetch error:", err.message);
